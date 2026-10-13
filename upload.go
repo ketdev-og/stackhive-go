@@ -83,6 +83,8 @@ type Upload struct {
 	filename    string
 	contentType string
 	progress    ProgressFunc
+	parentID    string
+	assetName   string
 
 	// offset is what the SERVICE says it holds. It is only ever set from an
 	// answer the service gave. Bytes put on the wire is a different number —
@@ -127,6 +129,8 @@ func (c *Client) NewUpload(path string, opts ...Option) (*Upload, error) {
 		filename:    filepath.Base(path),
 		contentType: contentTypeOf(path),
 		progress:    o.progress,
+		parentID:    o.parentID,
+		assetName:   o.assetName,
 		pauseSignal: make(chan struct{}, 1),
 		cancelled:   make(chan struct{}),
 	}, nil
@@ -484,12 +488,19 @@ func (u *Upload) ensurePlan(ctx context.Context) error {
 		ObjectID  string `json:"objectId"`
 		StreamURL string `json:"streamUrl"`
 	}
-	err := u.client.call(ctx, http.MethodPost, "/api/storage/uploads", map[string]any{
+	body := map[string]any{
 		"filename": u.filename,
 		"mime":     u.contentType,
 		"size":     u.size,
 		"stream":   true,
-	}, &plan)
+	}
+	if u.parentID != "" {
+		body["parentId"] = u.parentID
+	}
+	if u.assetName != "" {
+		body["assetName"] = u.assetName
+	}
+	err := u.client.call(ctx, http.MethodPost, "/api/storage/uploads", body, &plan)
 	if err != nil {
 		return err
 	}
