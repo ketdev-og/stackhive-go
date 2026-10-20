@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -46,6 +48,11 @@ type Client struct {
 	http           *http.Client
 	maxAttempts    int
 	requestTimeout time.Duration
+
+	// key is what the service said about the API key, fetched once: a key's
+	// workspace never changes.
+	keyMu sync.Mutex
+	key   *KeyInfo
 }
 
 // New validates the configuration and builds a client.
@@ -112,37 +119,70 @@ func (c *Client) Get(ctx context.Context, objectID string) (*StoredObject, error
 
 // ------------------------------------------------------- shared plumbing
 
+// busyRetries is how many times a call answered 429 (rate limited) or 503
+// (busy) is tried again. Neither answer means the request was carried out,
+// so trying again is safe.
+const busyRetries = 4
+
 // call sends one control-plane request and decodes the JSON answer.
 //
-// One place for the Authorization header, the timeout and the mapping of
-// failures to APIError, so every call behaves the same way. Only small JSON
-// passes through here; file content never does.
+// One place for the Authorization header, the timeout, retrying a busy
+// service and the mapping of failures to APIError, so every call behaves the
+// same way. Only small JSON passes through here; file content never does.
 func (c *Client) call(ctx context.Context, method, path string, in, out any) error {
+	var encoded []byte
+	if in != nil {
+		var err error
+		if encoded, err = json.Marshal(in); err != nil {
+			return fmt.Errorf("stackhive: encoding request: %w", err)
+		}
+	}
+
+	for attempt := 0; ; attempt++ {
+		status, header, data, err := c.send(ctx, method, path, encoded)
+		if err != nil {
+			return err
+		}
+		if (status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable) && attempt < busyRetries {
+			if err := wait(ctx, retryDelay(header.Get("Retry-After"), attempt)); err != nil {
+				return err
+			}
+			continue
+		}
+		if status < 200 || status >= 300 {
+			return newAPIError(status, data)
+		}
+		if out != nil && len(data) > 0 {
+			if err := json.Unmarshal(data, out); err != nil {
+				return fmt.Errorf("stackhive: decoding response: %w", err)
+			}
+		}
+		return nil
+	}
+}
+
+// send makes one attempt at a call, bounded by RequestTimeout.
+func (c *Client) send(ctx context.Context, method, path string, encoded []byte) (int, http.Header, []byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
 	defer cancel()
 
 	var body io.Reader
-	if in != nil {
-		encoded, err := json.Marshal(in)
-		if err != nil {
-			return fmt.Errorf("stackhive: encoding request: %w", err)
-		}
+	if encoded != nil {
 		body = bytes.NewReader(encoded)
 	}
-
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
-		return fmt.Errorf("stackhive: building request: %w", err)
+		return 0, nil, nil, fmt.Errorf("stackhive: building request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Accept", "application/json")
-	if in != nil {
+	if encoded != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("stackhive: %s %s: %w", method, path, err)
+		return 0, nil, nil, fmt.Errorf("stackhive: %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 
@@ -150,18 +190,23 @@ func (c *Client) call(ctx context.Context, method, path string, in, out any) err
 	// memory. Every legitimate response here is a few kilobytes.
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return fmt.Errorf("stackhive: reading response: %w", err)
+		return 0, nil, nil, fmt.Errorf("stackhive: reading response: %w", err)
 	}
+	return resp.StatusCode, resp.Header, data, nil
+}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return newAPIError(resp.StatusCode, data)
+// retryDelay is how long to wait before retrying a busy answer: what its
+// Retry-After header asks for (seconds or a date), capped at a minute, or
+// the usual backoff when it has none.
+func retryDelay(retryAfter string, attempt int) time.Duration {
+	retryAfter = strings.TrimSpace(retryAfter)
+	if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds >= 0 {
+		return min(time.Duration(seconds)*time.Second, time.Minute)
 	}
-	if out != nil && len(data) > 0 {
-		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("stackhive: decoding response: %w", err)
-		}
+	if at, err := http.ParseTime(retryAfter); err == nil {
+		return min(max(time.Until(at), 0), time.Minute)
 	}
-	return nil
+	return backoff(attempt)
 }
 
 // abort tells the service to abandon an upload and release its parts.

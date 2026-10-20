@@ -14,6 +14,12 @@ type StoredObject struct {
 	Status    string    `json:"status"` // uploading, completed or aborted
 	ETag      string    `json:"etag"`
 	CreatedAt time.Time `json:"createdAt"`
+
+	// AssetID is the workspace file a finished upload became, for GetFile,
+	// DownloadFile, RenameFile and DeleteFile. SavedAs is its name: the
+	// file's own, or "name (1).ext" when that was taken in its folder.
+	AssetID string `json:"assetId"`
+	SavedAs string `json:"savedAs"`
 }
 
 // IsComplete reports whether the file is fully stored and can be downloaded.

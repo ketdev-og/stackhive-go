@@ -24,9 +24,17 @@ import (
 // The signed URL expires, so a long transfer can outlive it. A 401 or 403 from
 // storage is therefore not a failure: it means fetch a new URL and carry on.
 func (c *Client) DownloadTo(ctx context.Context, objectID, target string, opts ...Option) error {
+	return c.download(ctx, target, opts, func(ctx context.Context) (string, error) {
+		return c.signedURL(ctx, objectID)
+	})
+}
+
+// download fetches into target from the URL sign returns, asking for a new
+// one when it expires mid-transfer.
+func (c *Client) download(ctx context.Context, target string, opts []Option, sign func(context.Context) (string, error)) error {
 	o := collect(opts)
 
-	signed, err := c.signedURL(ctx, objectID)
+	signed, err := sign(ctx)
 	if err != nil {
 		return err
 	}
@@ -47,7 +55,7 @@ func (c *Client) DownloadTo(ctx context.Context, objectID, target string, opts .
 			case http.StatusUnauthorized, http.StatusForbidden:
 				// The signature aged out mid-download. Not a failure — get a
 				// fresh URL. Counted, so a URL that never works still gives up.
-				if signed, err = c.signedURL(ctx, objectID); err != nil {
+				if signed, err = sign(ctx); err != nil {
 					return err
 				}
 				attempt++

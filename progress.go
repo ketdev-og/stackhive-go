@@ -12,9 +12,10 @@ type ProgressFunc func(transferred, total int64)
 type Option func(*options)
 
 type options struct {
-	progress ProgressFunc
-	parentID  string
-	assetName string
+	progress   ProgressFunc
+	parentID   string
+	assetName  string
+	folderPath string
 }
 
 // WithProgress reports progress to fn as the transfer runs.
@@ -22,12 +23,21 @@ func WithProgress(fn ProgressFunc) Option {
 	return func(o *options) { o.progress = fn }
 }
 
-// WithParentID places the created asset under this folder. Omit for the root.
+// WithParentID places the uploaded file in this folder. Without it the file
+// goes to the API key's upload folder, or the top level when it has none.
 func WithParentID(id string) Option {
-	return func(o *options) {o.parentID = id}
+	return func(o *options) { o.parentID = id }
 }
 
-// WithAssetName names the created asset. Defaults to the file's name.
+// WithFolderPath files the upload in these folders, e.g. "2026/oct",
+// creating any that are missing. It starts in the WithParentID folder, else
+// the API key's upload folder, else the top level.
+func WithFolderPath(path string) Option {
+	return func(o *options) { o.folderPath = path }
+}
+
+// WithAssetName names the uploaded file. Defaults to the file's name. A name
+// already taken in the folder gets " (1)" added, and so on.
 func WithAssetName(name string) Option {
 	return func(o *options) { o.assetName = name }
 }

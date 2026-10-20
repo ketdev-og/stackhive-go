@@ -13,9 +13,21 @@ import (
 //
 //	if errors.Is(err, stackhive.ErrUnauthorized) { ... }
 var (
-	// ErrUnauthorized means the API key is missing, wrong, revoked or expired.
-	// Retrying will not help.
+	// ErrUnauthorized means the API key is missing, wrong, revoked or
+	// expired, or its owner has left the key's workspace (code
+	// "invalid_key"). Retrying will not help.
 	ErrUnauthorized = errors.New("stackhive: API key rejected")
+
+	// ErrForbidden means the key may not do this. Its access level may not
+	// include it (code "insufficient_scope", e.g. a read-only key uploading),
+	// the route may not be open to API keys ("api_key_not_allowed"), or the
+	// key's owner may not be allowed it in the workspace.
+	ErrForbidden = errors.New("stackhive: not allowed for this API key")
+
+	// ErrNotFiled means an upload's bytes were stored but the file could not
+	// be added to the workspace, for example because its folder was deleted
+	// during the upload. The APIError's message says why.
+	ErrNotFiled = errors.New("stackhive: uploaded but not added to the workspace")
 
 	// ErrNotFound means no such object, or it belongs to someone else. The
 	// service deliberately does not say which: admitting an object exists but
@@ -52,9 +64,13 @@ func (e *APIError) Error() string {
 func (e *APIError) Is(target error) bool {
 	switch target {
 	case ErrUnauthorized:
-		return e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden
+		return e.Status == http.StatusUnauthorized
+	case ErrForbidden:
+		return e.Status == http.StatusForbidden
 	case ErrNotFound:
 		return e.Status == http.StatusNotFound
+	case ErrNotFiled:
+		return e.Status == http.StatusUnprocessableEntity && e.Code == "not_filed"
 	}
 	return false
 }

@@ -85,6 +85,7 @@ type Upload struct {
 	progress    ProgressFunc
 	parentID    string
 	assetName   string
+	folderPath  string
 
 	// offset is what the SERVICE says it holds. It is only ever set from an
 	// answer the service gave. Bytes put on the wire is a different number —
@@ -131,6 +132,7 @@ func (c *Client) NewUpload(path string, opts ...Option) (*Upload, error) {
 		progress:    o.progress,
 		parentID:    o.parentID,
 		assetName:   o.assetName,
+		folderPath:  o.folderPath,
 		pauseSignal: make(chan struct{}, 1),
 		cancelled:   make(chan struct{}),
 	}, nil
@@ -256,6 +258,11 @@ func (u *Upload) Start(ctx context.Context) (*StoredObject, error) {
 
 		case result.status == http.StatusNotFound:
 			return nil, u.finish(ErrExpired)
+
+		case result.status == http.StatusUnprocessableEntity:
+			// The bytes are stored but the file couldn't be added to the
+			// workspace (ErrNotFiled). Sending them again won't change that.
+			return nil, u.finish(newAPIError(result.status, result.body))
 
 		default:
 			// Everything else is recoverable: 400 interrupted, 499 ended early,
@@ -499,6 +506,9 @@ func (u *Upload) ensurePlan(ctx context.Context) error {
 	}
 	if u.assetName != "" {
 		body["assetName"] = u.assetName
+	}
+	if u.folderPath != "" {
+		body["folderPath"] = u.folderPath
 	}
 	err := u.client.call(ctx, http.MethodPost, "/api/storage/uploads", body, &plan)
 	if err != nil {
